@@ -4,9 +4,7 @@
 use ansi_term::Colour::Green;
 use ansi_term::Style;
 use anyhow::Result;
-use cargo_license::{
-    get_dependencies_from_cargo_lock, write_json, write_tsv, DependencyDetails, GetDependenciesOpt,
-};
+use cargo_license::{get_dependencies_from_cargo_lock, write_json, write_tsv, DependencyDetails, GetDependenciesOpt, write_csv};
 use cargo_metadata::{CargoOpt, MetadataCommand};
 use clap::Parser;
 use std::borrow::Cow;
@@ -115,8 +113,8 @@ fn colored<'a, 'b>(s: &'a str, style: &'b Style, enable_color: bool) -> Cow<'a, 
 #[derive(Debug, Parser)]
 #[allow(clippy::struct_excessive_bools)]
 #[clap(
-    bin_name = "cargo license",
-    about = "Cargo subcommand to see licenses of dependencies."
+bin_name = "cargo license",
+about = "Cargo subcommand to see licenses of dependencies."
 )]
 struct Opt {
     #[clap(value_name = "PATH", long)]
@@ -138,6 +136,10 @@ struct Opt {
     #[clap(short, long)]
     /// Detailed output as tab-separated-values.
     tsv: bool,
+
+    #[clap(short, long, value_name = "File_PATH")]
+    /// Detailed output as tab-separated-values.
+    csv: Option<PathBuf>,
 
     #[clap(short, long)]
     /// Detailed output as JSON.
@@ -175,12 +177,16 @@ struct Opt {
     /// Only include resolve dependencies matching the given target-triple.
     filter_platform: Option<String>,
 
+    #[clap(long = "filter-parent", value_name = "PACKAGE-NAME")]
+    /// Only include resolve dependencies matching the given target-triple.
+    filter_parent: Option<String>,
+
     #[clap(
-        long = "color",
-        name = "WHEN",
-        possible_value = "auto",
-        possible_value = "always",
-        possible_value = "never"
+    long = "color",
+    name = "WHEN",
+    possible_value = "auto",
+    possible_value = "always",
+    possible_value = "never"
     )]
     /// Coloring
     color: Option<String>,
@@ -225,6 +231,7 @@ fn run() -> Result<()> {
         avoid_build_deps: opt.avoid_build_deps,
         direct_deps_only: opt.direct_deps_only,
         root_only: opt.root_only,
+        filter_parent: opt.filter_parent.map(|v| v.split_whitespace().map(|v|v.to_owned()).collect::<Vec<String>>()).unwrap_or_default(),
     };
 
     let dependencies = get_dependencies_from_cargo_lock(cmd, get_opts)?;
@@ -240,6 +247,11 @@ fn run() -> Result<()> {
         atty::is(atty::Stream::Stdout)
     };
 
+    if let Some(path) = opt.csv {
+        write_csv(&dependencies, path)?;
+        return Ok(());
+    }
+
     if opt.tsv {
         write_tsv(&dependencies)?;
     } else if opt.json {
@@ -249,6 +261,7 @@ fn run() -> Result<()> {
     } else {
         group_by_license_type(dependencies, opt.authors, enable_color);
     }
+
     Ok(())
 }
 

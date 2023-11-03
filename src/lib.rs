@@ -5,6 +5,7 @@ use cargo_metadata::{
 use serde_derive::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::path::PathBuf;
 
 fn normalize(license_string: &str) -> String {
     let mut list: Vec<&str> = license_string
@@ -15,6 +16,16 @@ fn normalize(license_string: &str) -> String {
     list.sort_unstable();
     list.dedup();
     list.join(" OR ")
+}
+
+fn get_relation(metadata: &Metadata) -> Result<HashMap<&str, &str>> {
+    let mut rels = HashMap::new();
+    for p in &metadata.packages {
+        for x in &p.dependencies {
+            rels.insert(x.name.as_str(), p.name.as_str());
+        }
+    }
+    Ok(rels)
 }
 
 fn get_node_name_filter(metadata: &Metadata, opt: &GetDependenciesOpt) -> Result<HashSet<String>> {
@@ -53,11 +64,12 @@ pub struct DependencyDetails {
     pub license: Option<String>,
     pub license_file: Option<String>,
     pub description: Option<String>,
+    pub parent: Option<String>,
 }
 
 impl DependencyDetails {
     #[must_use]
-    pub fn new(package: &Package) -> Self {
+    pub fn new(package: &Package, parent: Option<String>) -> Self {
         let authors = if package.authors.is_empty() {
             None
         } else {
@@ -74,6 +86,7 @@ impl DependencyDetails {
                 .description
                 .to_owned()
                 .map(|s| s.trim().replace('\n', " ")),
+            parent,
         }
     }
 }
@@ -84,6 +97,7 @@ pub struct GetDependenciesOpt {
     pub avoid_build_deps: bool,
     pub direct_deps_only: bool,
     pub root_only: bool,
+    pub filter_parent: Vec<String>,
 }
 
 pub fn get_dependencies_from_cargo_lock(
@@ -92,6 +106,7 @@ pub fn get_dependencies_from_cargo_lock(
 ) -> Result<Vec<DependencyDetails>> {
     let metadata = metadata_command.exec()?;
 
+    let rels = get_relation(&metadata)?;
     let filter = get_node_name_filter(&metadata, &opt)?;
 
     let connected = {
@@ -121,10 +136,10 @@ pub fn get_dependencies_from_cargo_lock(
                 .filter(|NodeDep { dep_kinds, .. }| {
                     missing_dep_kinds
                         || dep_kinds.iter().any(|DepKindInfo { kind, .. }| {
-                            *kind == DependencyKind::Normal
-                                || !opt.avoid_dev_deps && *kind == DependencyKind::Development
-                                || !opt.avoid_build_deps && *kind == DependencyKind::Build
-                        })
+                        *kind == DependencyKind::Normal
+                            || !opt.avoid_dev_deps && *kind == DependencyKind::Development
+                            || !opt.avoid_build_deps && *kind == DependencyKind::Build
+                    })
                 })
                 .map(|NodeDep { pkg, .. }| pkg)
         };
@@ -142,14 +157,16 @@ pub fn get_dependencies_from_cargo_lock(
         }
         connected
     };
-
     let mut detailed_dependencies = metadata
         .packages
         .iter()
         .filter(|p| connected.contains(&p.id))
         .filter(|p| filter.is_empty() || filter.contains(&p.name))
-        .map(DependencyDetails::new)
+        .map(|p| DependencyDetails::new(p, rels.get(p.name.as_str()).map(|v| v.to_string())))
+        .filter(|p| opt.filter_parent.is_empty() || p.parent.as_ref().map(|v| opt.filter_parent.contains(&v)).is_none())
         .collect::<Vec<_>>();
+
+
     detailed_dependencies.sort_unstable();
     Ok(detailed_dependencies)
 }
@@ -159,6 +176,18 @@ pub fn write_tsv(dependencies: &[DependencyDetails]) -> Result<()> {
         .delimiter(b'\t')
         .quote_style(csv::QuoteStyle::Necessary)
         .from_writer(io::stdout());
+    for dependency in dependencies {
+        wtr.serialize(dependency)?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
+pub fn write_csv(dependencies: &[DependencyDetails], path: PathBuf) -> Result<()> {
+    let mut wtr = csv::WriterBuilder::new()
+        // .delimiter(b'\t')
+        .quote_style(csv::QuoteStyle::Necessary)
+        .from_path(path)?;
     for dependency in dependencies {
         wtr.serialize(dependency)?;
     }
