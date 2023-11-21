@@ -18,11 +18,12 @@ fn normalize(license_string: &str) -> String {
     list.join(" OR ")
 }
 
-fn get_relation(metadata: &Metadata) -> Result<HashMap<&str, &str>> {
+fn get_relation(metadata: &Metadata) -> Result<HashMap<&str, HashSet<&str>>> {
     let mut rels = HashMap::new();
     for p in &metadata.packages {
         for x in &p.dependencies {
-            rels.insert(x.name.as_str(), p.name.as_str());
+            let ps = rels.entry(x.name.as_str()).or_insert_with(|| HashSet::default());
+            ps.insert(p.name.as_str());
         }
     }
     Ok(rels)
@@ -64,12 +65,17 @@ pub struct DependencyDetails {
     pub license: Option<String>,
     pub license_file: Option<String>,
     pub description: Option<String>,
-    pub parent: Option<String>,
+    #[serde(serialize_with = "to_string")]
+    pub parent: Option<Vec<String>>,
+}
+
+fn to_string<S>(x: &Option<Vec<String>>, s: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+    s.serialize_str(x.clone().unwrap_or_default().join(" ").as_str())
 }
 
 impl DependencyDetails {
     #[must_use]
-    pub fn new(package: &Package, parent: Option<String>) -> Self {
+    pub fn new(package: &Package, parent: Option<Vec<String>>) -> Self {
         let authors = if package.authors.is_empty() {
             None
         } else {
@@ -162,8 +168,8 @@ pub fn get_dependencies_from_cargo_lock(
         .iter()
         .filter(|p| connected.contains(&p.id))
         .filter(|p| filter.is_empty() || filter.contains(&p.name))
-        .map(|p| DependencyDetails::new(p, rels.get(p.name.as_str()).map(|v| v.to_string())))
-        .filter(|p| opt.filter_parent.is_empty() || p.parent.as_ref().map(|v| opt.filter_parent.contains(&v)).is_none())
+        .map(|p| DependencyDetails::new(p, rels.get(p.name.as_str()).map(|v| v.iter().map(|v| v.to_string()).collect::<Vec<_>>())))
+        .filter(|p| opt.filter_parent.is_empty() || p.parent.as_ref().map(|v| opt.filter_parent.iter().any(|p| v.contains(p))).is_some_and(|v| v))
         .collect::<Vec<_>>();
 
 
